@@ -218,6 +218,102 @@ def merge_rule5_with_savant(rule5_df: pd.DataFrame, savant_df: pd.DataFrame) -> 
     return merged
 
 
+def apply_gradient_styling(df: pd.DataFrame, player_type: str) -> pd.DataFrame:
+    """Apply gradient color styling to AAA stats based on performance percentiles."""
+
+    def get_color_from_percentile(value, col_min, col_max, reverse=False):
+        """Generate color based on percentile within the column range."""
+        if pd.isna(value) or col_min == col_max:
+            return ''
+
+        # Calculate percentile (0-1)
+        percentile = (value - col_min) / (col_max - col_min)
+
+        if reverse:  # For stats where lower is better
+            percentile = 1 - percentile
+
+        # Color gradient from red -> yellow -> green
+        if percentile < 0.5:
+            # Red to Yellow (bottom 50%)
+            r = 255
+            g = int(255 * (percentile * 2))
+            b = 0
+        else:
+            # Yellow to Green (top 50%)
+            r = int(255 * (2 - percentile * 2))
+            g = 255
+            b = 0
+
+        # Adjust for dark theme - make colors less intense
+        r = int(r * 0.7)
+        g = int(g * 0.7)
+        b = int(b * 0.7)
+
+        return f'background-color: rgb({r},{g},{b}); color: white; font-weight: bold'
+
+    if player_type == "Hitter":
+        # Stats where higher is better
+        higher_better = ["xBA", "xwOBA", "xSLG", "Barrel%", "EV", "BB%", "Sprint Speed"]
+        # Stats where lower is better
+        lower_better = ["Chase%", "K%"]
+
+        def style_hitter(row):
+            styles = [''] * len(row)
+
+            for col in higher_better:
+                if col in row.index and pd.notna(row[col]):
+                    col_data = df[col].dropna()
+                    if len(col_data) > 1:
+                        idx = row.index.get_loc(col)
+                        styles[idx] = get_color_from_percentile(
+                            row[col], col_data.min(), col_data.max(), reverse=False
+                        )
+
+            for col in lower_better:
+                if col in row.index and pd.notna(row[col]):
+                    col_data = df[col].dropna()
+                    if len(col_data) > 1:
+                        idx = row.index.get_loc(col)
+                        styles[idx] = get_color_from_percentile(
+                            row[col], col_data.min(), col_data.max(), reverse=True
+                        )
+
+            return styles
+
+        return df.style.apply(style_hitter, axis=1)
+
+    else:  # Pitcher
+        # Stats where higher is better
+        higher_better = ["Max Velo", "K%", "Whiff%", "Chase%"]
+        # Stats where lower is better
+        lower_better = ["xBA", "xwOBA", "xSLG", "BB%"]
+
+        def style_pitcher(row):
+            styles = [''] * len(row)
+
+            for col in higher_better:
+                if col in row.index and pd.notna(row[col]):
+                    col_data = df[col].dropna()
+                    if len(col_data) > 1:
+                        idx = row.index.get_loc(col)
+                        styles[idx] = get_color_from_percentile(
+                            row[col], col_data.min(), col_data.max(), reverse=False
+                        )
+
+            for col in lower_better:
+                if col in row.index and pd.notna(row[col]):
+                    col_data = df[col].dropna()
+                    if len(col_data) > 1:
+                        idx = row.index.get_loc(col)
+                        styles[idx] = get_color_from_percentile(
+                            row[col], col_data.min(), col_data.max(), reverse=True
+                        )
+
+            return styles
+
+        return df.style.apply(style_pitcher, axis=1)
+
+
 # Initialize session state
 if 'last_fetch_time' not in st.session_state:
     st.session_state.last_fetch_time = None
@@ -297,18 +393,30 @@ if st.session_state.current_page == "Player Data":
 
                 if not hitters_aaa.empty:
                     st.write(f"**Hitters** (minimum {MIN_PA_THRESHOLD} PA)")
+                    st.caption(
+                        "Green (best) -> Red (worst) - Gradient shows relative performance among eligible players")
+
                     hitters_display = hitters_aaa[[
                         "Player", "Position", "Age", "Current Org", "Org Rank", "Prospect Score",
                         "PA", "xBA", "xwOBA", "xSLG", "Barrel%", "Chase%", "K%", "BB%", "EV", "Sprint Speed"
                     ]].sort_values("Org Rank", na_position='last')
 
+                    # Keep original for download
+                    hitters_download = hitters_display.copy()
+
+                    # Apply gradient styling for display
+                    hitters_styled = apply_gradient_styling(hitters_display, "Hitter")
+
                     st.dataframe(
-                        hitters_display,
+                        hitters_styled,
                         use_container_width=True,
                         hide_index=True,
                         column_config={
+                            "Age": st.column_config.NumberColumn("Age", format="%.1f"),
+                            "Org Rank": st.column_config.NumberColumn("Org Rank", format="%.0f"),
                             "Prospect Score": st.column_config.NumberColumn("Prospect Score", format="%.1f%%",
                                                                             help="ProspectSavant overall score percentile"),
+                            "PA": st.column_config.NumberColumn("PA", format="%.0f"),
                             "EV": st.column_config.NumberColumn("EV", format="%.1f"),
                             "xBA": st.column_config.NumberColumn("xBA", format="%.3f"),
                             "xSLG": st.column_config.NumberColumn("xSLG", format="%.3f"),
@@ -317,12 +425,12 @@ if st.session_state.current_page == "Player Data":
                             "K%": st.column_config.NumberColumn("K%", format="%.1f%%"),
                             "BB%": st.column_config.NumberColumn("BB%", format="%.1f%%"),
                             "xwOBA": st.column_config.NumberColumn("xwOBA", format="%.3f"),
-                            "Sprint Speed": st.column_config.NumberColumn("Sprint Speed", format="%.2f"),
+                            "Sprint Speed": st.column_config.NumberColumn("Speed Score", format="%.2f"),
                         }
                     )
 
                     # Download button for hitters
-                    csv_hitters = hitters_display.to_csv(index=False)
+                    csv_hitters = hitters_download.to_csv(index=False)
                     st.download_button(
                         label="📥 Download AAA Hitters CSV",
                         data=csv_hitters,
@@ -333,18 +441,30 @@ if st.session_state.current_page == "Player Data":
 
                 if not pitchers_aaa.empty:
                     st.write(f"**Pitchers** (minimum {MIN_IP_THRESHOLD} IP)")
+                    st.caption(
+                        "Green (best) -> Red (worst) - Gradient shows relative performance among eligible players")
+
                     pitchers_display = pitchers_aaa[[
                         "Player", "Position", "Age", "Current Org", "Org Rank", "Prospect Score",
                         "IP", "Max Velo", "xBA", "xwOBA", "xSLG", "K%", "BB%", "Chase%", "Whiff%"
                     ]].sort_values("Org Rank", na_position='last')
 
+                    # Keep original for download
+                    pitchers_download = pitchers_display.copy()
+
+                    # Apply gradient styling for display
+                    pitchers_styled = apply_gradient_styling(pitchers_display, "Pitcher")
+
                     st.dataframe(
-                        pitchers_display,
+                        pitchers_styled,
                         use_container_width=True,
                         hide_index=True,
                         column_config={
+                            "Age": st.column_config.NumberColumn("Age", format="%.1f"),
+                            "Org Rank": st.column_config.NumberColumn("Org Rank", format="%.0f"),
                             "Prospect Score": st.column_config.NumberColumn("Prospect Score", format="%.1f%%",
                                                                             help="ProspectSavant overall score percentile"),
+                            "IP": st.column_config.NumberColumn("IP", format="%.1f"),
                             "Max Velo": st.column_config.NumberColumn("Max Velo", format="%.1f"),
                             "xBA": st.column_config.NumberColumn("xBA", format="%.3f"),
                             "xSLG": st.column_config.NumberColumn("xSLG", format="%.3f"),
@@ -357,7 +477,7 @@ if st.session_state.current_page == "Player Data":
                     )
 
                     # Download button for pitchers
-                    csv_pitchers = pitchers_display.to_csv(index=False)
+                    csv_pitchers = pitchers_download.to_csv(index=False)
                     st.download_button(
                         label="📥 Download AAA Pitchers CSV",
                         data=csv_pitchers,
@@ -388,7 +508,7 @@ if st.session_state.current_page == "Player Data":
                 hide_index=True,
                 column_config={
                     "Org Rank": st.column_config.NumberColumn("Org Rank", help="Organization ranking", format="%.0f"),
-                    "Overall Rank": st.column_config.NumberColumn("Overall Rank", help="Overall level ranking",
+                    "Overall Rank": st.column_config.NumberColumn("Overall Level Rank", help="Overall level ranking",
                                                                   format="%.0f")
                 }
             )
@@ -517,7 +637,7 @@ if st.session_state.current_page == "Player Data":
             hide_index=True,
             column_config={
                 "Org Rank": st.column_config.NumberColumn("Org Rank", help="Organization ranking", format="%.0f"),
-                "Overall Rank": st.column_config.NumberColumn("Overall Rank",
+                "Overall Rank": st.column_config.NumberColumn("Overall Level Rank",
                                                               help="Overall level ranking across all teams",
                                                               format="%.0f"),
                 "Age": st.column_config.NumberColumn("Age", format="%.1f")
@@ -538,8 +658,10 @@ if st.session_state.current_page == "Player Data":
         st.info("👆 Click the button above to fetch the latest Rule 5 eligible players")
 
     st.divider()
-    st.caption("Prospect draft info and rankings courtesy of FanGraphs | Triple A advanced metrics and prospect scores courtesy of ProspectSavant")
-    st.caption("Rule 5 Draft Dashboard is not affiliated with MLB, nor with any of their digital properties. All rights reserved.")
+    st.caption(
+        "Prospect draft info and rankings courtesy of FanGraphs | Triple A advanced metrics and prospect scores courtesy of ProspectSavant")
+    st.caption(
+        "Rule 5 Draft Dashboard is not affiliated with MLB, nor with any of their digital properties. All rights reserved.")
 
 # ==================== PAGE: ABOUT & HISTORY ====================
 elif st.session_state.current_page == "About & History":
